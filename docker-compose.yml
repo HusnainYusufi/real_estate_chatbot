@@ -1,0 +1,179 @@
+# Full deployment stack for the Chatbot Suite.
+#
+#   Core (always on):  postgres · api · ai-engine · admin · openwa
+#   Voice (opt-in):    livekit · redis · livekit-sip · voice-agent
+#                      → docker compose --profile voice up -d
+#
+# First run:
+#   cp .env.example .env      # set secrets + ANTHROPIC/OPENAI/GEMINI keys
+#   docker compose up -d --build
+#   docker compose exec api node dist/seed.js     # demo admin + bots
+#
+# Services talk to each other by name on the default compose network; only the
+# ports mapped below are reachable from the host.
+
+name: chatbot-suite
+
+services:
+  # ── Database ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-chatbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chatbot}
+      POSTGRES_DB: ${POSTGRES_DB:-chatbot}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # Host access for tooling; safe to remove in production.
+      - '${POSTGRES_PORT:-5434}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-chatbot}']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # ── NestJS control plane ──────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-chatbot}:${POSTGRES_PASSWORD:-chatbot}@postgres:5432/${POSTGRES_DB:-chatbot}
+      DB_SYNC: ${DB_SYNC:-true}
+      API_PORT: '4000'
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
+      AI_ENGINE_URL: http://ai-engine:8000
+      VOICE_AGENT_URL: http://voice-agent:8100
+      # Where other containers reach THIS api (webhooks, tool callbacks).
+      PUBLIC_API_URL: http://api:4000
+      OPENWA_URL: http://openwa:2785
+      OPENWA_API_KEY: ${OPENWA_API_KEY:-}
+      OPENWA_WEBHOOK_SECRET: ${OPENWA_WEBHOOK_SECRET:-dev-openwa-webhook-secret-change-me}
+    ports:
+      - '${API_PORT:-4000}:4000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://localhost:4000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # ── Python AI engine (multi-provider agentic loop) ────────────────────────
+  ai-engine:
+    build:
+      context: ./apps/ai-engine
+    restart: unless-stopped
+    environment:
+      INTERNAL_API_URL: http://api:4000
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
+      # Fallback keys — per-bot keys come from the API (encrypted).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ALLOW_PRIVATE_WEBHOOKS: ${ALLOW_PRIVATE_WEBHOOKS:-0}
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # ── Next.js admin panel ────────────────────────────────────────────────────
+  admin:
+    build:
+      context: ./apps/admin
+      args:
+        # Browser-reachable API URL — baked in at build time. For a real
+        # deployment set NEXT_PUBLIC_API_URL to your public API URL/domain.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+    restart: unless-stopped
+    ports:
+      - '${ADMIN_PORT:-4100}:4100'
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://localhost:4100/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── WhatsApp gateway (self-hosted OpenWA) ──────────────────────────────────
+  openwa:
+    image: ghcr.io/rmyndharis/openwa:latest
+    restart: unless-stopped
+    ports:
+      - '${OPENWA_PORT:-2785}:2785'
+    volumes:
+      - openwa-data:/app/data
+
+  # ── Voice stack (opt-in: --profile voice) ──────────────────────────────────
+  livekit:
+    image: livekit/livekit-server:latest
+    profiles: ['voice']
+    restart: unless-stopped
+    command: ['--config', '/etc/livekit.yaml']
+    volumes:
+      - ./infra/livekit.yaml:/etc/livekit.yaml
+    ports:
+      - '7880:7880'
+      - '7881:7881'
+      - '50000-50020:50000-50020/udp'
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    profiles: ['voice']
+    restart: unless-stopped
+
+  livekit-sip:
+    image: livekit/sip:latest
+    profiles: ['voice']
+    restart: unless-stopped
+    command: ['--config', '/etc/livekit-sip.yaml']
+    volumes:
+      - ./infra/livekit-sip.yaml:/etc/livekit-sip.yaml
+    ports:
+      - '5060:5060/udp'
+      - '10000-10020:10000-10020/udp'
+    depends_on:
+      - livekit
+      - redis
+
+  voice-agent:
+    build:
+      context: ./apps/voice-agent
+    profiles: ['voice']
+    restart: unless-stopped
+    environment:
+      INTERNAL_API_URL: http://api:4000
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
+      LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-devsecret_change_me_32chars_min__}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      VOICE_TTS_PROVIDER: ${VOICE_TTS_PROVIDER:-deepgram}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      SIP_OUTBOUND_TRUNK_ID: ${SIP_OUTBOUND_TRUNK_ID:-}
+    ports:
+      - '8100:8100'
+    depends_on:
+      - livekit
+      - api
+
+volumes:
+  pgdata:
+  openwa-data:

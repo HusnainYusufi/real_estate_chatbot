@@ -1,0 +1,8 @@
+# LiveKit SIP bridge config. Connects your carrier's SIP trunk to LiveKit.
+api_key: devkey
+api_secret: devsecret_change_me_32chars_min__
+ws_url: ws://livekit:7880
+redis:
+  address: redis:6379
+sip_port: 5060
+rtp_port: 10000-10020
