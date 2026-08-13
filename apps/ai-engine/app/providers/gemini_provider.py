@@ -88,6 +88,10 @@ class GeminiProvider:
                 task = loop.run_in_executor(None, produce)
                 text_buf = ""
                 calls: list[Any] = []
+                # Preserve the original function-call PARTS: newer Gemini models
+                # attach a `thought_signature` that MUST be echoed back with the
+                # function call, or the next turn 400s (INVALID_ARGUMENT).
+                call_parts: list[Any] = []
                 while True:
                     kind, payload = await queue.get()
                     if kind == "end":
@@ -111,6 +115,7 @@ class GeminiProvider:
                                 yield ("text", {"text": part.text})
                             if getattr(part, "function_call", None):
                                 calls.append(part.function_call)
+                                call_parts.append(part)  # keeps thought_signature
                 await task
 
                 if text_buf:
@@ -120,8 +125,9 @@ class GeminiProvider:
                     model_parts = []
                     if text_buf:
                         model_parts.append(types.Part(text=text_buf))
-                    for call in calls:
-                        model_parts.append(types.Part(function_call=call))
+                    # Echo the original call parts (with their thought_signature)
+                    # rather than reconstructing them.
+                    model_parts.extend(call_parts)
                     contents.append(types.Content(role="model", parts=model_parts))
 
                     response_parts = []
