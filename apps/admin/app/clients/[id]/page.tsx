@@ -7,6 +7,7 @@ import { api, money } from '@/lib/api';
 import type { Bot as BotType, ClientDetail, ModelsResponse, Template } from '@/lib/types';
 import { BotPanel } from '@/components/bot-panel';
 import { ClientSettings } from '@/components/client-settings';
+import { PlanPicker } from '@/components/plan-picker';
 import { PageHeader } from '@/components/page-header';
 import { StatCard } from '@/components/stat-card';
 import { Button } from '@/components/ui/button';
@@ -91,8 +92,9 @@ export default function ClientPage() {
         <StatCard label="Your AI cost this month" value={money(cost)} icon={DollarSign} />
       </div>
 
-      <div className="mb-6">
+      <div className="mb-6 grid gap-6 lg:grid-cols-2">
         <ClientSettings orgId={orgId} org={org} onSaved={reload} />
+        <PlanPicker orgId={orgId} org={org} costThisMonth={cost} onSaved={reload} />
       </div>
 
       <Card className="mb-6">

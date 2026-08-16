@@ -2,7 +2,16 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Bot, Calculator, KeyRound, LogOut, UserPlus, Users } from 'lucide-react';
+import {
+  Bot,
+  Calculator,
+  KeyRound,
+  LayoutTemplate,
+  LogOut,
+  Package,
+  UserPlus,
+  Users,
+} from 'lucide-react';
 import { setToken } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -10,6 +19,8 @@ import { Button } from '@/components/ui/button';
 const NAV = [
   { href: '/', label: 'Clients', icon: Users, exact: true },
   { href: '/clients/new', label: 'Onboard client', icon: UserPlus },
+  { href: '/templates', label: 'Personas', icon: LayoutTemplate },
+  { href: '/packages', label: 'Packages', icon: Package },
   { href: '/calculator', label: 'Cost calculator', icon: Calculator },
   { href: '/settings', label: 'AI providers', icon: KeyRound },
 ];

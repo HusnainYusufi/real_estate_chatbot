@@ -12,6 +12,7 @@ import { CatalogModule } from './catalog/catalog.module';
 import { HealthController } from './health.controller';
 import { KnowledgeModule } from './knowledge/knowledge.module';
 import { LeadsModule } from './leads/leads.module';
+import { PackagesModule } from './packages/packages.module';
 import { TemplatesModule } from './templates/templates.module';
 import { UsageModule } from './usage/usage.module';
 import { VoiceModule } from './voice/voice.module';
@@ -37,6 +38,7 @@ import { WhatsappModule } from './whatsapp/whatsapp.module';
     InternalModule,
     WhatsappModule,
     TemplatesModule,
+    PackagesModule,
     VoiceModule,
     AdminModule,
   ],

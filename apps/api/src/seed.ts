@@ -54,7 +54,7 @@ async function main() {
   const existing = await bots.list(orgId);
 
   console.log('\nDemo bots:');
-  for (const template of templates.list()) {
+  for (const template of await templates.list()) {
     let bot = existing.find((b) => b.name === template.name);
     if (!bot) {
       bot = await templates.instantiate(bots, knowledge, orgId, template.id);

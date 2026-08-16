@@ -12,10 +12,12 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  IsArray,
   IsBoolean,
   IsEmail,
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
@@ -29,6 +31,7 @@ import { BotsService } from '../bots/bots.service';
 import { CatalogService } from '../catalog/catalog.service';
 import { KnowledgeService } from '../knowledge/knowledge.service';
 import { LeadsService } from '../leads/leads.service';
+import { PackagesService } from '../packages/packages.service';
 import { ProvidersService } from '../providers/providers.service';
 import { TemplatesService } from '../templates/templates.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
@@ -62,6 +65,32 @@ class CreateBotFromTemplateDto {
   @IsOptional() @IsString() @MinLength(1) @MaxLength(120) name?: string;
 }
 
+class UpsertTemplateDto {
+  @IsString() @MinLength(1) @MaxLength(120) name: string;
+  @IsOptional() @IsString() @MaxLength(200) tagline?: string;
+  @IsString() @MinLength(10) @MaxLength(10000) persona: string;
+  @IsOptional() @IsString() @MaxLength(20000) instructions?: string;
+  @IsOptional() @IsString() @MaxLength(20000) guardrails?: string;
+  @IsOptional() @IsString() @MaxLength(2000) greeting?: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) suggestedQuestions?: string[];
+  @IsOptional() @IsBoolean() leadCaptureEnabled?: boolean;
+  @IsOptional() @IsString() @MaxLength(1_000_000) knowledgeSeed?: string;
+}
+
+class UpsertPackageDto {
+  @IsString() @MinLength(1) @MaxLength(80) name: string;
+  @IsOptional() @IsString() @MaxLength(500) description?: string;
+  @IsInt() @Min(0) monthlyResponseLimit: number;
+  @IsNumber() @Min(0) priceUsd: number;
+  @IsOptional() @IsString() @MaxLength(8) currency?: string;
+  @IsOptional() @IsBoolean() active?: boolean;
+}
+
+class AssignPackageDto {
+  /** null clears the package (custom pricing). */
+  @IsOptional() @IsUUID() packageId?: string;
+}
+
 class AddDocumentDto {
   @IsString() @MinLength(1) @MaxLength(200) title: string;
   @IsString() @MinLength(1) @MaxLength(1_000_000) content: string;
@@ -89,6 +118,7 @@ export class AdminController {
     private readonly templates: TemplatesService,
     private readonly catalog: CatalogService,
     private readonly providers: ProvidersService,
+    private readonly packages: PackagesService,
   ) {}
 
   // ── Models & providers (BYO keys) ────────────────────────────────────────
@@ -119,17 +149,55 @@ export class AdminController {
     await this.providers.remove(id);
   }
 
-  // ── Templates ────────────────────────────────────────────────────────────
+  // ── Templates (personas — runtime, DB-backed) ────────────────────────────
 
   @Get('templates')
   listTemplates() {
-    return this.templates.list().map((t) => ({
-      id: t.id,
-      name: t.name,
-      tagline: t.tagline ?? '',
-      leadCaptureEnabled: t.leadCaptureEnabled ?? false,
-      knowledgeFiles: t.knowledgeFiles ?? [],
-    }));
+    return this.templates.list();
+  }
+
+  @Post('templates')
+  createTemplate(@Body() dto: UpsertTemplateDto) {
+    return this.templates.create(dto);
+  }
+
+  @Patch('templates/:id')
+  updateTemplate(@Param('id', ParseUUIDPipe) id: string, @Body() dto: Partial<UpsertTemplateDto>) {
+    return this.templates.update(id, dto);
+  }
+
+  @Delete('templates/:id')
+  @HttpCode(204)
+  async deleteTemplate(@Param('id', ParseUUIDPipe) id: string) {
+    await this.templates.remove(id);
+  }
+
+  // ── Packages (pricing plans) ──────────────────────────────────────────────
+
+  @Get('packages')
+  listPackages() {
+    return this.packages.list();
+  }
+
+  @Post('packages')
+  createPackage(@Body() dto: UpsertPackageDto) {
+    return this.packages.create(dto);
+  }
+
+  @Patch('packages/:id')
+  updatePackage(@Param('id', ParseUUIDPipe) id: string, @Body() dto: Partial<UpsertPackageDto>) {
+    return this.packages.update(id, dto);
+  }
+
+  @Delete('packages/:id')
+  @HttpCode(204)
+  async deletePackage(@Param('id', ParseUUIDPipe) id: string) {
+    await this.packages.remove(id);
+  }
+
+  @Post('clients/:orgId/package')
+  assignPackage(@Param('orgId', ParseUUIDPipe) orgId: string, @Body() dto: AssignPackageDto) {
+    return this.packages.assignToOrg(orgId, dto.packageId ?? null);
   }
 
   // ── Clients (orgs) ───────────────────────────────────────────────────────

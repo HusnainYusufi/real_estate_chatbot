@@ -58,9 +58,24 @@ export interface Bot {
 export interface Template {
   id: string;
   name: string;
-  tagline: string;
+  tagline: string | null;
+  persona: string;
+  instructions: string | null;
+  guardrails: string | null;
+  greeting: string | null;
+  suggestedQuestions: string[];
   leadCaptureEnabled: boolean;
-  knowledgeFiles: string[];
+  knowledgeSeed: string | null;
+}
+
+export interface Package {
+  id: string;
+  name: string;
+  description: string | null;
+  monthlyResponseLimit: number;
+  priceUsd: string;
+  currency: string;
+  active: boolean;
 }
 
 export interface KnowledgeDoc {
@@ -126,6 +141,8 @@ export interface ClientDetail {
     status: string;
     notes: string;
     monthlyMessageLimit: number;
+    packageId: string | null;
+    monthlyPriceUsd: string;
     createdAt: string;
   };
   users: { id: string; email: string; name: string; role: string }[];

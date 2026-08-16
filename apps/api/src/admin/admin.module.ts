@@ -6,6 +6,7 @@ import { Organization } from '../entities/organization.entity';
 import { User } from '../entities/user.entity';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
 import { LeadsModule } from '../leads/leads.module';
+import { PackagesModule } from '../packages/packages.module';
 import { ProvidersModule } from '../providers/providers.module';
 import { TemplatesModule } from '../templates/templates.module';
 import { WhatsappModule } from '../whatsapp/whatsapp.module';
@@ -22,6 +23,7 @@ import { AdminService } from './admin.service';
     WhatsappModule,
     TemplatesModule,
     ProvidersModule,
+    PackagesModule,
   ],
   controllers: [AdminController],
   providers: [AdminService, AdminGuard],

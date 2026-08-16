@@ -11,6 +11,14 @@ export class Organization {
   @Column({ default: 'free' })
   plan: string;
 
+  /** Assigned pricing package (sets the limit + the price you bill). */
+  @Column('uuid', { nullable: true })
+  packageId: string | null;
+
+  /** Monthly price billed to this client (snapshot of the package price). */
+  @Column('numeric', { precision: 12, scale: 2, default: 0 })
+  monthlyPriceUsd: string;
+
   /** CRM lifecycle: lead | trial | active | paused | churned */
   @Column({ default: 'active' })
   status: string;
