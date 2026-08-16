@@ -2,7 +2,18 @@
 
 import * as React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Copy, Globe, Phone, PhoneOutgoing, Send, Trash2 } from 'lucide-react';
+import {
+  BookOpen,
+  Check,
+  ChevronDown,
+  Copy,
+  Globe,
+  Loader2,
+  Phone,
+  PhoneOutgoing,
+  Send,
+  Trash2,
+} from 'lucide-react';
 import { api, API_BASE, money, widgetUrl } from '@/lib/api';
 import type {
   Bot,
@@ -393,21 +404,23 @@ function Overview({
 
 // ── Test chat (playground) ───────────────────────────────────────────────────
 
-interface ChatLine {
-  role: 'user' | 'bot' | 'status';
-  text: string;
-}
+type ChatLine =
+  | { role: 'user'; text: string }
+  | { role: 'bot'; text: string }
+  | { role: 'status'; text: string }
+  | { role: 'sources'; query: string; sources: string[]; preview: string };
 
 function TestChat({ bot }: { bot: Bot }) {
   const [lines, setLines] = useState<ChatLine[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [streaming, setStreaming] = useState(false);
   const convId = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [lines]);
+  }, [lines, streaming]);
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
@@ -419,13 +432,15 @@ function TestChat({ bot }: { bot: Bot }) {
 
     let botIdx = -1;
     const appendBot = (delta: string) => {
+      setStreaming(true);
       setLines((l) => {
         const copy = [...l];
         if (botIdx === -1 || copy[botIdx]?.role !== 'bot') {
           copy.push({ role: 'bot', text: delta });
           botIdx = copy.length - 1;
         } else {
-          copy[botIdx] = { role: 'bot', text: copy[botIdx].text + delta };
+          const cur = copy[botIdx];
+          if (cur.role === 'bot') copy[botIdx] = { role: 'bot', text: cur.text + delta };
         }
         return copy;
       });
@@ -435,11 +450,7 @@ function TestChat({ bot }: { bot: Bot }) {
       const res = await fetch(`${API_BASE}/v1/public/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          botId: bot.publicId,
-          conversationId: convId.current,
-          message,
-        }),
+        body: JSON.stringify({ botId: bot.publicId, conversationId: convId.current, message }),
       });
       if (!res.ok || !res.body) {
         const err = await res.json().catch(() => ({}));
@@ -468,46 +479,78 @@ function TestChat({ bot }: { bot: Bot }) {
           else if (event === 'text') appendBot(parsed.text);
           else if (event === 'tool_use') {
             botIdx = -1;
+            setStreaming(false);
+            const q = parsed.input?.query;
             const label =
               parsed.name === 'search_knowledge'
-                ? 'Searching the knowledge base…'
+                ? `Searching the knowledge base${q ? ` for "${q}"` : ''}…`
                 : `Running ${parsed.name}…`;
             setLines((l) => [...l, { role: 'status', text: label }]);
+          } else if (event === 'tool_result') {
+            // Show WHAT it retrieved so you can verify it used the knowledge base.
+            if (parsed.name === 'search_knowledge') {
+              setLines((l) => [
+                ...l,
+                {
+                  role: 'sources',
+                  query: '',
+                  sources: parsed.sources ?? [],
+                  preview: parsed.preview ?? '',
+                },
+              ]);
+            }
           } else if (event === 'refusal') {
+            setStreaming(false);
             setLines((l) => [...l, { role: 'bot', text: "I can't help with that." }]);
           } else if (event === 'error') {
+            setStreaming(false);
             setLines((l) => [...l, { role: 'status', text: '⚠ ' + parsed.message }]);
+          } else if (event === 'done') {
+            setStreaming(false);
           }
         }
       }
     } catch (err) {
       setLines((l) => [...l, { role: 'status', text: '⚠ ' + (err as Error).message }]);
     } finally {
+      setStreaming(false);
       setBusy(false);
     }
   }
 
+  const lastBotIdx = (() => {
+    for (let i = lines.length - 1; i >= 0; i--) if (lines[i].role === 'bot') return i;
+    return -1;
+  })();
+
   return (
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
-        Chat with the bot exactly as a visitor would — it uses this bot&apos;s knowledge base and
-        tools. When it searches your documents you&apos;ll see it here.
+        Chat with the bot exactly as a visitor would. You&apos;ll see it generate the answer in real
+        time, and every knowledge-base lookup — with the exact sources it pulled from.
       </p>
       <div
         ref={scrollRef}
-        className="h-80 space-y-3 overflow-y-auto rounded-lg border bg-muted/20 p-4"
+        className="h-96 space-y-3 overflow-y-auto rounded-lg border bg-muted/20 p-4"
       >
         {lines.length === 0 && (
           <p className="text-sm text-muted-foreground">
             {bot.greeting || `Say hello to ${bot.name}.`}
           </p>
         )}
-        {lines.map((l, i) =>
-          l.role === 'status' ? (
-            <p key={i} className="text-xs italic text-muted-foreground">
-              {l.text}
-            </p>
-          ) : (
+        {lines.map((l, i) => {
+          if (l.role === 'status') {
+            return (
+              <p key={i} className="flex items-center gap-1.5 text-xs italic text-muted-foreground">
+                <Loader2 className="size-3 animate-spin" />
+                {l.text}
+              </p>
+            );
+          }
+          if (l.role === 'sources') {
+            return <SourcesBlock key={i} sources={l.sources} preview={l.preview} />;
+          }
+          return (
             <div key={i} className={cn('flex', l.role === 'user' ? 'justify-end' : 'justify-start')}>
               <div
                 className={cn(
@@ -518,9 +561,18 @@ function TestChat({ bot }: { bot: Bot }) {
                 )}
               >
                 {l.text}
+                {streaming && i === lastBotIdx && (
+                  <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-foreground/60 align-middle" />
+                )}
               </div>
             </div>
-          ),
+          );
+        })}
+        {busy && !streaming && lastBotIdx === -1 && (
+          <p className="flex items-center gap-1.5 text-xs italic text-muted-foreground">
+            <Loader2 className="size-3 animate-spin" />
+            Thinking…
+          </p>
         )}
       </div>
       <form onSubmit={send} className="flex gap-2">
@@ -544,6 +596,41 @@ function TestChat({ bot }: { bot: Bot }) {
           Reset
         </Button>
       </form>
+    </div>
+  );
+}
+
+/** Transparency panel: which documents the bot retrieved, expandable to the snippets. */
+function SourcesBlock({ sources, preview }: { sources: string[]; preview: string }) {
+  const [open, setOpen] = useState(false);
+  const found = sources.length > 0;
+  return (
+    <div className="rounded-lg border border-dashed bg-background/60 p-3 text-xs">
+      <button
+        type="button"
+        className="flex w-full items-center gap-1.5 font-medium text-muted-foreground"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <BookOpen className="size-3.5 text-primary" />
+        {found
+          ? `Retrieved ${sources.length} source${sources.length > 1 ? 's' : ''} from the knowledge base`
+          : 'Searched the knowledge base — no matching documents'}
+        {(found || preview) && <ChevronDown className={cn('ml-auto size-3.5 transition-transform', open && 'rotate-180')} />}
+      </button>
+      {found && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {sources.map((s, i) => (
+            <span key={i} className="rounded bg-primary/10 px-2 py-0.5 text-primary">
+              {s}
+            </span>
+          ))}
+        </div>
+      )}
+      {open && preview && (
+        <pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap rounded bg-muted p-2 text-[11px] leading-relaxed text-muted-foreground">
+          {preview}
+        </pre>
+      )}
     </div>
   );
 }

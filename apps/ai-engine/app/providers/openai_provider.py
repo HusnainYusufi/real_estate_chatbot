@@ -10,7 +10,7 @@ from typing import Any
 
 from .. import config
 from ..prompt import build_system_prompt
-from .base import Event, history_to_text_pairs
+from .base import Event, history_to_text_pairs, summarize_tool_result
 
 
 class OpenAIProvider:
@@ -135,7 +135,10 @@ class OpenAIProvider:
                         except Exception as err:  # noqa: BLE001
                             ok = False
                             result = f"Error: {err}"
-                        yield ("tool_result", {"name": c["name"], "ok": ok})
+                        yield (
+                            "tool_result",
+                            {"name": c["name"], "ok": ok, **summarize_tool_result(c["name"], result)},
+                        )
                         messages.append(
                             {"role": "tool", "tool_call_id": c["id"], "content": result}
                         )

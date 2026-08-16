@@ -11,7 +11,7 @@ from typing import Any
 
 from .. import config
 from ..prompt import build_system_prompt
-from .base import Event, history_to_text_pairs
+from .base import Event, history_to_text_pairs, summarize_tool_result
 
 
 class GeminiProvider:
@@ -140,7 +140,14 @@ class GeminiProvider:
                         except Exception as err:  # noqa: BLE001
                             ok = False
                             result = f"Error: {err}"
-                        yield ("tool_result", {"name": call.name, "ok": ok})
+                        yield (
+                            "tool_result",
+                            {
+                                "name": call.name,
+                                "ok": ok,
+                                **summarize_tool_result(call.name, result),
+                            },
+                        )
                         response_parts.append(
                             types.Part(
                                 function_response=types.FunctionResponse(

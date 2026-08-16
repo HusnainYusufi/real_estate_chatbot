@@ -9,7 +9,7 @@ from anthropic import AsyncAnthropic
 
 from .. import config
 from ..prompt import build_system_prompt
-from .base import Event
+from .base import Event, summarize_tool_result
 
 _default_client: AsyncAnthropic | None = None
 
@@ -113,7 +113,14 @@ class AnthropicProvider:
                     result_blocks = []
                     for block in tool_blocks:
                         outcome = await _run_one(execute_tool, block, req)
-                        yield ("tool_result", {"name": block.name, "ok": outcome["ok"]})
+                        yield (
+                            "tool_result",
+                            {
+                                "name": block.name,
+                                "ok": outcome["ok"],
+                                **summarize_tool_result(block.name, outcome["block"].get("content")),
+                            },
+                        )
                         result_blocks.append(outcome["block"])
                     tool_turn = {"role": "user", "content": result_blocks}
                     messages.append(tool_turn)
