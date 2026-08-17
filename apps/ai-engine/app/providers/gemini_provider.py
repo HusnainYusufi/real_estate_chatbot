@@ -6,12 +6,33 @@ runs a full native tool loop.
 """
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
 from .. import config
 from ..prompt import build_system_prompt
 from .base import Event, history_to_text_pairs, summarize_tool_result
+
+
+def _retry_delay_seconds(err: Exception) -> float | None:
+    """Seconds to wait before retrying a rate-limited Gemini call, or None if
+    the error isn't a retryable per-minute 429 (e.g. a daily-quota exhaustion,
+    which won't recover on retry)."""
+    msg = str(err)
+    low = msg.lower()
+    is_429 = "429" in msg or "resource_exhausted" in low or "too many requests" in low
+    if not is_429:
+        return None
+    # Daily free-tier caps won't clear by waiting a few seconds — don't retry.
+    if "perday" in low.replace(" ", "") or "per day" in low:
+        return None
+    # Honor the server's RetryInfo ("retryDelay": "34s") when present.
+    m = re.search(r'retry[_\s-]?delay["\s:]*"?(\d+(?:\.\d+)?)\s*s', low)
+    if m:
+        delay = float(m.group(1))
+        return delay if delay <= 60 else None
+    return 8.0  # 429 with no explicit delay → short default backoff
 
 
 class GeminiProvider:
@@ -72,51 +93,76 @@ class GeminiProvider:
             for _ in range(config.MAX_TOOL_ITERATIONS):
                 # google-genai streaming is sync-iterator based; run it off-thread
                 # and hand chunks back through an asyncio queue.
-                queue: asyncio.Queue = asyncio.Queue()
                 loop = asyncio.get_running_loop()
-
-                def produce():
-                    try:
-                        for chunk in client.models.generate_content_stream(
-                            model=model, contents=contents, config=gen_config
-                        ):
-                            loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
-                        loop.call_soon_threadsafe(queue.put_nowait, ("end", None))
-                    except Exception as err:  # noqa: BLE001
-                        loop.call_soon_threadsafe(queue.put_nowait, ("err", err))
-
-                task = loop.run_in_executor(None, produce)
-                text_buf = ""
-                calls: list[Any] = []
                 # Preserve the original function-call PARTS: newer Gemini models
                 # attach a `thought_signature` that MUST be echoed back with the
                 # function call, or the next turn 400s (INVALID_ARGUMENT).
+                text_buf = ""
+                calls: list[Any] = []
                 call_parts: list[Any] = []
+
+                # Retry loop around one generation: the free tier throws 429
+                # (RESOURCE_EXHAUSTED) on per-minute bursts. Those self-heal, so
+                # honor Gemini's retry delay and try again before giving up.
+                attempt = 0
                 while True:
-                    kind, payload = await queue.get()
-                    if kind == "end":
-                        break
-                    if kind == "err":
-                        raise payload
-                    chunk = payload
-                    if getattr(chunk, "usage_metadata", None):
-                        um = chunk.usage_metadata
-                        usage["inputTokens"] = um.prompt_token_count or usage["inputTokens"]
-                        usage["outputTokens"] = (
-                            um.candidates_token_count or usage["outputTokens"]
-                        )
-                        usage["cacheReadTokens"] = (
-                            getattr(um, "cached_content_token_count", 0) or usage["cacheReadTokens"]
-                        )
-                    for cand in getattr(chunk, "candidates", None) or []:
-                        for part in getattr(cand.content, "parts", None) or []:
-                            if getattr(part, "text", None):
-                                text_buf += part.text
-                                yield ("text", {"text": part.text})
-                            if getattr(part, "function_call", None):
-                                calls.append(part.function_call)
-                                call_parts.append(part)  # keeps thought_signature
-                await task
+                    queue: asyncio.Queue = asyncio.Queue()
+
+                    def produce():
+                        try:
+                            for chunk in client.models.generate_content_stream(
+                                model=model, contents=contents, config=gen_config
+                            ):
+                                loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
+                            loop.call_soon_threadsafe(queue.put_nowait, ("end", None))
+                        except Exception as err:  # noqa: BLE001
+                            loop.call_soon_threadsafe(queue.put_nowait, ("err", err))
+
+                    task = loop.run_in_executor(None, produce)
+                    text_buf = ""
+                    calls = []
+                    call_parts = []
+                    stream_error: Exception | None = None
+                    while True:
+                        kind, payload = await queue.get()
+                        if kind == "end":
+                            break
+                        if kind == "err":
+                            stream_error = payload
+                            break
+                        chunk = payload
+                        if getattr(chunk, "usage_metadata", None):
+                            um = chunk.usage_metadata
+                            usage["inputTokens"] = um.prompt_token_count or usage["inputTokens"]
+                            usage["outputTokens"] = (
+                                um.candidates_token_count or usage["outputTokens"]
+                            )
+                            usage["cacheReadTokens"] = (
+                                getattr(um, "cached_content_token_count", 0)
+                                or usage["cacheReadTokens"]
+                            )
+                        for cand in getattr(chunk, "candidates", None) or []:
+                            for part in getattr(cand.content, "parts", None) or []:
+                                if getattr(part, "text", None):
+                                    text_buf += part.text
+                                    yield ("text", {"text": part.text})
+                                if getattr(part, "function_call", None):
+                                    calls.append(part.function_call)
+                                    call_parts.append(part)  # keeps thought_signature
+                    await task
+
+                    if stream_error is None:
+                        break  # success
+                    # Only retry a per-minute 429, and only if nothing was streamed
+                    # yet (429s fire before any token, so this holds).
+                    delay = _retry_delay_seconds(stream_error)
+                    if delay is not None and text_buf == "" and attempt < 3:
+                        attempt += 1
+                        # Cap each wait so a live chat never hangs too long; a
+                        # per-minute window usually clears within a couple tries.
+                        await asyncio.sleep(min(delay, 15.0))
+                        continue
+                    raise stream_error
 
                 if text_buf:
                     assistant_text_parts.append(text_buf)
@@ -208,6 +254,15 @@ def _describe(err: Exception) -> str:
     lower = msg.lower()
     if "api key" in lower or "api_key" in lower or "permission" in lower or "401" in lower:
         return "Gemini rejected the API key. Check the key in the admin panel (Providers)."
+    if "perday" in lower.replace(" ", "") or "per day" in lower:
+        return (
+            "The Gemini free tier's daily limit is used up (it resets at midnight "
+            "Pacific). Switch this bot to Gemini Flash-Lite (higher free limits), add "
+            "billing to your Google API key, or use a Claude/OpenAI key for now."
+        )
     if "quota" in lower or "429" in lower or "resource_exhausted" in lower:
-        return "Rate limited / quota exceeded on Gemini. Please retry in a moment."
+        return (
+            "Gemini is briefly rate-limited on the free tier. Please try again in a "
+            "few seconds — or switch this bot to Gemini Flash-Lite for higher limits."
+        )
     return f"Gemini error: {msg}"
